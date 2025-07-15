@@ -5,3 +5,7 @@ pandas==2.2.2
 pytest==8.2.2
 pytest-cov==5.0.0
 lightgbm==4.3.0
+mlflow
+azureml-mlflow
+azure-ai-ml
+azure-identity

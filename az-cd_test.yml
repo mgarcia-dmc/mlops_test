@@ -1,0 +1,74 @@
+pr: none
+
+variables:
+- group: mlops-dmc-vg
+
+stages:
+- stage: DeployToStaging
+  displayName: 'Desplegar a Staging'
+  jobs:
+  - job: "DeployToACI"
+    displayName: "Desplegar a ACI"
+    pool:
+      name: 'default'
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: AzureCLI@2
+      name: DeployACI
+      inputs:
+        azureSubscription: $(AZURE_RM_SVC_CONNECTION)
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          RUN_ID=$(az ml job list --experiment-name $(experiment.name) --query "[0].name" -o tsv)
+          az ml model create --name insurance_model --version 1 --path "azureml://jobs/$RUN_ID/outputs/model_output/" --type mlflow_model --workspace-name $(WORKSPACE_NAME) --resource-group $(RESOURCE_GROUP)
+          
+          echo "Creando endpoint en ACI..."
+          az ml online-endpoint create --name "insurance-endpoint-staging" -f deployment/aciDeploymentConfigStaging.yml --workspace-name $(WORKSPACE_NAME) --resource-group $(RESOURCE_GROUP)
+
+          echo "Desplegando modelo en ACI..."
+          az ml online-deployment create --name "blue" --endpoint "insurance-endpoint-staging" --file deployment/scoringConfig.yml --all-traffic --workspace-name $(WORKSPACE_NAME) --resource-group $(RESOURCE_GROUP)
+
+- stage: TestStaging
+  displayName: 'Probar en Staging'
+  dependsOn: DeployToStaging
+  jobs:
+  - job: "TestACI"
+    displayName: "Probar ACI"
+    pool:
+      name: 'default'
+      vmImage: 'ubuntu-latest'
+    steps:
+      - task: AzureCLI@2
+        name: TestACI
+        inputs:
+          azureSubscription: $(AZURE_RM_SVC_CONNECTION)
+          scriptType: bash
+          scriptLocation: inlineScript
+          inlineScript: |
+            SCORING_URI=$(az ml online-endpoint show -n "insurance-endpoint-staging" --query "scoring_uri" -o tsv)
+            SCORING_KEY=$(az ml online-endpoint get-credentials -n "insurance-endpoint-staging" --query "primaryKey" -o tsv)
+            pytest tests/integration/staging_test.py --scoreurl $SCORING_URI --scorekey $SCORING_KEY
+
+- stage: DeployToProd
+  displayName: 'Desplegar a Producción'
+  dependsOn: TestStaging
+  condition: succeeded()
+  jobs:
+  - job: "DeployToAKS"
+    displayName: "Desplegar a AKS"
+    pool:
+      name: 'default'
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: AzureCLI@2
+      name: DeployAKS
+      inputs:
+        azureSubscription: $(AZURE_RM_SVC_CONNECTION)
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          echo "Despliegue a Producción (AKS) no implementado aún. Añadir aquí los pasos para el despliegue a AKS."
+          # Ejemplo de los pasos que irían aquí:
+          # az ml online-endpoint create --name "insurance-endpoint-prod" -f deployment/aksDeploymentConfigProd.yml ...
+          # az ml online-deployment create --name "blue" --endpoint "insurance-endpoint-prod" --file deployment/scoringConfig.yml ...

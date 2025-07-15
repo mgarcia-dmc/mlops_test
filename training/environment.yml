@@ -1,0 +1,6 @@
+$schema: https://azuremlschemas.azureedge.net/latest/environment.schema.json
+name: insurance-training-env
+image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04
+# Como este archivo está en la misma carpeta que conda_dependencies.yml,
+# solo necesitamos el nombre del archivo.
+conda_file: conda_dependencies.yml

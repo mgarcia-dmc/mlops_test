@@ -14,7 +14,7 @@ variables:
   - name: amIcompute.idleSecondsBeforeScaledown
     value: 300
   - name: experiment.name
-    value: clase4
+    value: clase4-ci
 
 steps:
 - task: Bash@3
@@ -25,80 +25,106 @@ steps:
     workingDirectory: 'package_requirement'
 
 - bash: |
-    pytest training/train_test.py \
-    --doctest-modules \
-    --junitxml=junit/test-results.xml \
-    --cov=training.train \
-    --cov-report=xml \
-    --cov-report=html
-  displayName: pytest
+    pytest training/train_test.py --junitxml=junit/test-results.xml
+  displayName: 'Pytest'
 
 - task: PublishTestResults@2
-  displayName: 'Publish Test Results **/test-*.xml'
+  displayName: 'Publicar Resultados de Pruebas'
   inputs:
     testResultsFiles: '**/test-*.xml'
   condition: succeededOrFailed()
 
 - task: AzureCLI@2
-  displayName: 'Install cli ml '
+  displayName: 'Instalar extensión de ML para Azure CLI'
   inputs:
-    azureSubscription: 'az-mgt4-dev-svc-rm'
+    azureSubscription: $(AZURE_RM_SVC_CONNECTION)
     scriptType: bash
     scriptLocation: inlineScript
     inlineScript: 'az extension add -n ml'
 
 - task: AzureCLI@2
-  displayName: 'Azure ML Compute Cluster'
+  displayName: 'Crear o Actualizar Cluster de Cómputo de AML'
   inputs:
-    azureSubscription: 'az-mgt4-dev-svc-rm'
+    azureSubscription: $(AZURE_RM_SVC_CONNECTION)
     scriptType: bash
     scriptLocation: inlineScript
     inlineScript: |
       set -ex
-      az ml compute create \
-      --name $(amIcompute.clusterName) \
-      --type AmlCompute \
-      --size $(amlcompute.vmSize) \
-      --min-instances $(amlcompute.minNodes) \
-      --max-instances $(amlcompute.maxNodes) \
-      --idle-time-before-scale-down $(amIcompute.idleSecondsBeforeScaledown) \
-      --resource-group $(RESOURCE_GROUP) \
-      --workspace-name $(WORKSPACE_NAME)
+      az ml compute create --name $(amIcompute.clusterName) --type AmlCompute --size $(amlcompute.vmSize) --min-instances $(amlcompute.minNodes) --max-instances $(amlcompute.maxNodes) --idle-time-before-scale-down $(amIcompute.idleSecondsBeforeScaledown) --resource-group $(RESOURCE_GROUP) --workspace-name $(WORKSPACE_NAME)
 
 - task: AzureCLI@2
-  displayName: 'Register Storage'
+  displayName: 'Crear Asset de Datos en AML'
+  name: CreateDataAsset # Le damos un nombre para poder referenciar su variable
   inputs:
-    azureSubscription: 'az-mgt4-dev-svc-rm'
-    scriptType: bash
-    scriptLocation: inlineScript
-    inlineScript: |
-      set -ex
-      az ml data create \
-      --name insurance \
-      --path data \
-      --workspace-name $(WORKSPACE_NAME) \
-      --resource-group $(RESOURCE_GROUP)
-
-- bash: |
-    set -ex
-    mkdir metadata && mkdir models
-  displayName: Make Metadata and Model Dir
-
-- task: AzureCLI@2
-  inputs:
-    azureSubscription: 'az-mgt4-dev-svc-rm'
+    azureSubscription: $(AZURE_RM_SVC_CONNECTION)
     scriptType: 'bash'
     scriptLocation: 'inlineScript'
+    workingDirectory: '$(System.DefaultWorkingDirectory)'
     inlineScript: |
       set -ex
+      # Creamos un asset de datos en AML para la carpeta ./data
+      DATA_ASSET_ID=$(az ml data create --name insurance --path ./data --type uri_folder --workspace-name $(WORKSPACE_NAME) --resource-group $(RESOURCE_GROUP) --query id -o tsv)
+      echo "##vso[task.setvariable variable=dataAssetId;isOutput=true]$DATA_ASSET_ID"
+
+- task: AzureCLI@2
+  displayName: 'Crear o Actualizar Entorno de AML'
+  inputs:
+    azureSubscription: $(AZURE_RM_SVC_CONNECTION)
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    workingDirectory: '$(System.DefaultWorkingDirectory)'
+    inlineScript: |
+      set -ex
+      az ml environment create --file training/environment.yml --resource-group $(RESOURCE_GROUP) --workspace-name $(WORKSPACE_NAME)
+
+- task: AzureCLI@2
+  displayName: 'Ejecutar Job de Entrenamiento en AML'
+  name: TrainingJob
+  inputs:
+    azureSubscription: $(AZURE_RM_SVC_CONNECTION)
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    workingDirectory: '$(System.DefaultWorkingDirectory)'
+    inlineScript: |
+      set -ex # Salir si hay error e imprimir comandos
+
       export CLUSTER_NAME=$(amIcompute.clusterName)
       export EXPERIMENT_NAME=$(experiment.name)
 
       # Sustituir variables en el YAML (si usas envsubst)
       envsubst < mljob_insurance_template.yml > mljob_insurance.yml
 
-      az account set --subscription $(AZURE_SUBSCRIPTION_ID)
-      az ml job create \
-        --file mljob_insurance.yml \
+      # 1. Crear el job padre y obtener su nombre
+      echo "Creando el job padre..."
+      JOB_NAME_RAW=$(az ml job create --file mljob_insurance.yml \
         --resource-group $(RESOURCE_GROUP) \
-        --workspace-name $(WORKSPACE_NAME)
+        --workspace-name $(WORKSPACE_NAME) \
+        --stream \
+        --query name -o tsv)
+      echo "Job padre creado con el nombre: $JOB_NAME_RAW"
+
+      JOB_NAME=$(echo "$JOB_NAME_RAW" | awk '{print $2}')
+
+      echo "Job de entrenamiento creado con el nombre: $JOB_NAME"
+      # Comprobamos si la variable JOB_NAME está vacía
+      if [[ -z "$JOB_NAME" ]]; then
+        echo "##[error]¡Fallo crítico! No se pudo obtener el nombre del job de entrenamiento. Revisa el log de la creación del job."
+        exit 1
+      fi
+      echo "##vso[task.setvariable variable=jobName;isOutput=true]$JOB_NAME"
+
+- task: AzureCLI@2
+  displayName: 'Evaluar, Registrar y Promover Modelo'
+  inputs:
+    azureSubscription: $(AZURE_RM_SVC_CONNECTION)
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    workingDirectory: '$(System.DefaultWorkingDirectory)'
+    inlineScript: |
+      set -ex
+      # Pasamos los detalles del workspace desde las variables del pipeline
+      python training/evaluate_and_register.py \
+        --run_id $(TrainingJob.jobName) \
+        --subscription_id $(AZURE_SUBSCRIPTION_ID) \
+        --resource_group $(RESOURCE_GROUP) \
+        --workspace_name $(WORKSPACE_NAME)

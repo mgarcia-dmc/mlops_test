@@ -1,0 +1,23 @@
+$schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
+code: ./training
+command: >-
+  python train_aml.py 
+  --data_path ${{inputs.data_path}}
+  --training_parameters ${{inputs.training_parameters}}
+  --model_output ${{outputs.model_output}}
+inputs:
+  data_path:
+    type: uri_folder
+    path: azureml:insurance:1
+  training_parameters:
+    type: uri_file
+    path: ./parameters.json
+outputs:
+  model_output:
+    type: uri_folder
+environment:
+  conda_file: ./conda_dependencies.yml
+  image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04
+compute: azureml:$(amIcompute.clusterName)
+experiment_name: $(experiment.name)
+display_name: train-insurance-model-ci
