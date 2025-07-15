@@ -1,0 +1,22 @@
+# job.yml
+# mljob_insurance_template.yml
+experiment_name: $EXPERIMENT_NAME
+compute: azureml:$CLUSTER_NAME
+display_name: train-insurance-job
+
+code: training/                # Ruta donde está train_aml.py
+command: >
+  python train_aml.py --data_file_path  ${{inputs.data_path}}
+
+environment:
+  conda_file: training/conda_dependencies.yml
+  image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04  # opcional
+
+inputs:
+  data_path:
+    path: ./data
+    type: uri_folder
+
+outputs:
+  run_metadata:
+    type: uri_file

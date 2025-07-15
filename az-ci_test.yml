@@ -1,0 +1,104 @@
+pool:
+  name: Default
+
+variables:
+  - group: mlops-dmc-vg
+  - name: amIcompute.clusterName
+    value: 'mlops-dmc-c4'
+  - name: amlcompute.vmSize
+    value: 'STANDARD_DS2_V2'
+  - name: amlcompute.minNodes
+    value: '0'
+  - name: amlcompute.maxNodes
+    value: '2'
+  - name: amIcompute.idleSecondsBeforeScaledown
+    value: 300
+  - name: experiment.name
+    value: clase4
+
+steps:
+- task: Bash@3
+  displayName: 'Instalar Requerimientos'
+  inputs:
+    targetType: filePath
+    filePath: './package_requirement/install_requirements.sh'
+    workingDirectory: 'package_requirement'
+
+- bash: |
+    pytest training/train_test.py \
+    --doctest-modules \
+    --junitxml=junit/test-results.xml \
+    --cov=training.train \
+    --cov-report=xml \
+    --cov-report=html
+  displayName: pytest
+
+- task: PublishTestResults@2
+  displayName: 'Publish Test Results **/test-*.xml'
+  inputs:
+    testResultsFiles: '**/test-*.xml'
+  condition: succeededOrFailed()
+
+- task: AzureCLI@2
+  displayName: 'Install cli ml '
+  inputs:
+    azureSubscription: 'az-mgt4-dev-svc-rm'
+    scriptType: bash
+    scriptLocation: inlineScript
+    inlineScript: 'az extension add -n ml'
+
+- task: AzureCLI@2
+  displayName: 'Azure ML Compute Cluster'
+  inputs:
+    azureSubscription: 'az-mgt4-dev-svc-rm'
+    scriptType: bash
+    scriptLocation: inlineScript
+    inlineScript: |
+      set -ex
+      az ml compute create \
+      --name $(amIcompute.clusterName) \
+      --type AmlCompute \
+      --size $(amlcompute.vmSize) \
+      --min-instances $(amlcompute.minNodes) \
+      --max-instances $(amlcompute.maxNodes) \
+      --idle-time-before-scale-down $(amIcompute.idleSecondsBeforeScaledown) \
+      --resource-group $(RESOURCE_GROUP) \
+      --workspace-name $(WORKSPACE_NAME)
+
+- task: AzureCLI@2
+  displayName: 'Register Storage'
+  inputs:
+    azureSubscription: 'az-mgt4-dev-svc-rm'
+    scriptType: bash
+    scriptLocation: inlineScript
+    inlineScript: |
+      set -ex
+      az ml data create \
+      --name insurance \
+      --path data \
+      --workspace-name $(WORKSPACE_NAME) \
+      --resource-group $(RESOURCE_GROUP)
+
+- bash: |
+    set -ex
+    mkdir metadata && mkdir models
+  displayName: Make Metadata and Model Dir
+
+- task: AzureCLI@2
+  inputs:
+    azureSubscription: 'az-mgt4-dev-svc-rm'
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    inlineScript: |
+      set -ex
+      export CLUSTER_NAME=$(amIcompute.clusterName)
+      export EXPERIMENT_NAME=$(experiment.name)
+
+      # Sustituir variables en el YAML (si usas envsubst)
+      envsubst < mljob_insurance_template.yml > mljob_insurance.yml
+
+      az account set --subscription $(AZURE_SUBSCRIPTION_ID)
+      az ml job create \
+        --file mljob_insurance.yml \
+        --resource-group $(RESOURCE_GROUP) \
+        --workspace-name $(WORKSPACE_NAME)
